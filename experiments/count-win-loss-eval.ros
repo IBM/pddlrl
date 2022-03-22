@@ -1,0 +1,123 @@
+#!/bin/sh
+#|-*- mode:lisp -*-|#
+#| <Put a one-line description here>
+exec ros -Q -- $0 "$@"
+|#
+
+;; This file is a part of PDDLRL project.
+;; Copyright (c) 2020 Clement Gehring (clement@gehring.io)
+;; Copyright (c) 2021 Masataro Asai (guicho2.71828@gmail.com, masataro.asai@ibm.com), IBM Corporation
+
+(progn ;;init forms
+  (ros:ensure-asdf)
+  #+quicklisp (ql:quickload '(:eazy-gnuplot :yason :trivia :cl-ppcre :trivia.ppcre :iterate :cl-colors2 :function-cache) :silent t)
+  )
+
+(declaim (sb-ext:muffle-conditions style-warning))
+
+;; This plot compares the number of node evaluations between
+;; a baseline heuristic function and the learned heuristic function.
+
+(defpackage :ros.script.plot-init
+  (:use :cl :eazy-gnuplot :alexandria :trivia :ppcre :trivia.ppcre :iterate :function-cache)
+  (:import-from :cl-colors2 :rgb :rgb-red :rgb-blue :rgb-green))
+(in-package :ros.script.plot-init)
+
+(defcached parse-json (filename)
+  ;; (format t "; loading ~a ~%" (enough-namestring filename))
+  (with-open-file (f filename)
+    (yason:parse f)))
+
+
+(setf yason:*parse-object-as* :hash-table)
+(setf yason:*parse-json-booleans-as-symbols* nil)
+(setf yason:*parse-object-key-fn* #'read-from-string)
+
+(defun objects (log)
+  (parse-integer (subseq (gethash 'problem log) 1 4)))
+
+(defun solved-p (log)
+  (eq t (gethash 'solved log)))
+
+(defvar *evaluation-threshold* 100000)
+
+(defun evaluations (log)
+  (min *evaluation-threshold*
+       (gethash 'evaluated_states log)))
+
+(defun load-all-logs (train-dir)
+  (iter (with table = (make-hash-table :test 'equal))
+        (for logfile in (directory (format nil "~a/*/*.json" train-dir)))
+        (for problem = (pathname-name logfile))
+        ;; (for hash = (lastcar (pathname-directory logfile)))
+        (for log = (parse-json logfile))
+        (for eval = (if (solved-p log)
+                        (evaluations log)
+                        *evaluation-threshold*))
+        (push eval (gethash problem table))
+        (finally (return table))))
+
+(defun count-wins (train-dir-RL)
+  (ematch (pathname train-dir-RL)
+    ((pathname :directory (list* :relative dir rest))
+     (let* ((train-dir-nonRL
+             (make-pathname :defaults train-dir-RL
+                            :directory (list* :relative (format nil "~a-nonRL" dir) rest)))
+            (logs-RL (load-all-logs train-dir-RL))
+            (logs-nonRL (load-all-logs train-dir-nonRL))
+            (seeds (iter (for (problem RL-evals) in-hashtable logs-RL)
+                         (return (length RL-evals)))))
+       (iter (for seed below seeds)
+             (iter (for (problem RL-evals) in-hashtable logs-RL)
+                   (for RL-eval = (elt RL-evals seed))
+                   (for nonRL-evals = (gethash problem logs-nonRL))
+                   (for nonRL-eval = (first nonRL-evals))
+                   (counting (null nonRL-evals) into errors)
+                   (unless (null nonRL-evals)
+                     (counting (> nonRL-eval RL-eval) into wins)
+                     (counting (< nonRL-eval RL-eval) into losses)
+                     (counting (= nonRL-eval RL-eval) into ties))
+                   (finally
+                    (format t "~&~a ~a ~a ~a ~a ~a~%" wins losses ties errors seed train-dir-RL))))))))
+
+(defun count-wins-min-only (train-dir-RL)
+  (ematch (pathname train-dir-RL)
+    ((pathname :directory (list* :relative dir rest))
+     (let* ((train-dir-nonRL
+             (make-pathname :defaults train-dir-RL
+                            :directory (list* :relative (format nil "~a-nonRL" dir) rest)))
+            (logs-RL (load-all-logs train-dir-RL))
+            (logs-nonRL (load-all-logs train-dir-nonRL))
+            (RL-sum-evals (apply #'mapcar #'+
+                                 (iter (for (problem RL-evals) in-hashtable logs-RL)
+                                       (collecting RL-evals))))
+            (best-seed-index
+             (iter (for RL-sum-eval in RL-sum-evals)
+                   (for i from 0)
+                   (finding i minimizing RL-sum-eval))))
+       (iter (for (problem RL-evals) in-hashtable logs-RL)
+             (for RL-eval = (elt RL-evals best-seed-index))
+             (for nonRL-evals = (gethash problem logs-nonRL))
+             (for nonRL-eval = (first nonRL-evals))
+             (counting (null nonRL-evals) into errors)
+             (unless (null nonRL-evals)
+               (counting (> nonRL-eval RL-eval) into wins)
+               (counting (< nonRL-eval RL-eval) into losses)
+               (counting (= nonRL-eval RL-eval) into ties))
+             (finally
+              (format t "~&~a ~a ~a ~a ~a ~a~%" wins losses ties errors 'best train-dir-RL)))))))
+
+;; (progn
+(defun main (&optional (search "*") (heur "*") (domain "*") (dir "apr15") (track "*") &rest argv)
+  (declare (ignorable argv))
+  (format t "~&~a ~a ~a ~a ~a ~a~%" 'wins 'losses 'ties 'errors 'seed 'dir)
+
+  (iter (for eval-root-dir in (directory (format nil "~a/~a/~a/~a-True-~a/" dir track domain heur search)))
+        (for dirname = (enough-namestring eval-root-dir))
+        (count-wins-min-only dirname))
+  ;; (iter (for eval-root-dir in (directory (format nil "~a/~a/~a/~a-True-~a/" dir track domain heur search)))
+  ;;       (for dirname = (enough-namestring eval-root-dir))
+  ;;       (count-wins dirname))
+  )
+;; (main "gbfs" "*" "blocks")
+;; (main "gbfs" "*" "ferry"))

@@ -1,0 +1,26 @@
+# This file is a part of PDDLRL project.
+# Copyright (c) 2020 Clement Gehring (clement@gehring.io)
+# Copyright (c) 2021 Masataro Asai (guicho2.71828@gmail.com, masataro.asai@ibm.com), IBM Corporation
+
++ To run all experiments, run
+
+  #+begin_src
+  ./experiments.py AllExperiments --local-scheduler --workers 200 --log-level INFO --root nov9 --cluster
+  #+end_src
+
++ To run non-RL experiments, run
+
+  #+begin_src
+  ./experiments.py NonRLExperiments --local-scheduler --workers 200 --log-level INFO --root nov9 --cluster
+  #+end_src
+
++ To run RL experiments, run
+
+  #+begin_src
+  ./experiments.py RLExperiments    --local-scheduler --workers 200 --log-level INFO --root nov9 --cluster
+  #+end_src
+
++ To reproduce the experiments, modify =AbstractExperiment.cmd= method in =experiments.py=
+  appropriately for the job scheduler available in your compute cluster.
+
++ To generate plots and tables, run plot-all.sh

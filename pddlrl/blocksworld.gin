@@ -1,0 +1,122 @@
+# This file is a part of PDDLRL project.
+# Copyright (c) 2020 Clement Gehring (clement@gehring.io)
+# Copyright (c) 2021 Masataro Asai (guicho2.71828@gmail.com, masataro.asai@ibm.com), IBM Corporation
+
+import pddlrl.env_utils
+import pddlrl.configurables
+
+# Macros:
+# ==============================================================================
+SHAPING_HEURISTIC = 'hadd'
+USE_COST_FUNCTION = True
+BATCH_SIZE = 25
+BUFFER_SIZE = 6000
+DISCOUNT = 0.999
+FINAL_HIDDEN_UNITS = 0
+LEARNING_RATE = 0.003
+MAX_ARITY = 3
+MLP_HIDDEN_UNITS = 8
+NUM_LAYERS = 6
+TRAIN_PROBLEM_DIR = "pddl/blocksworld/train"
+RESIDUAL_NLM = True
+SEED = 42
+TARGET_UPDATE_PERIOD = 400      # how often we update the target function, e.g., Q-value
+TEMPERATURE = 0.25
+WITH_PERMUTE = True
+
+# Parameters for adam:
+# ==============================================================================
+adam.b1 = 0.9
+adam.b2 = 0.999
+adam.eps = 1e-08
+adam.learning_rate = %LEARNING_RATE
+
+# Parameters for AVIAgent:
+# ==============================================================================
+AVIAgent.actor_policy = @rlax.softmax()
+AVIAgent.batch_size = %BATCH_SIZE
+AVIAgent.dynamics = @PDDLDynamics()
+AVIAgent.encoder = @make_encoder()
+AVIAgent.environment_specs = @make_environment_specs()
+AVIAgent.learner_policy = @rlax.softmax()
+AVIAgent.max_replay_size = %BUFFER_SIZE
+AVIAgent.network = @make_network()
+AVIAgent.optimizer = @adam()
+AVIAgent.samples_per_insert = %BATCH_SIZE
+AVIAgent.target_update_period = %TARGET_UPDATE_PERIOD
+AVIAgent.train_after_steps = 100
+
+# Parameters for experiment_loop:
+# ==============================================================================
+experiment_loop.log_every_n = 1
+experiment_loop.max_episode_length = 150
+experiment_loop.num_steps = 32000
+experiment_loop.save_every_n = 10000
+experiment_loop.saver = @SimpleSaver()
+
+# Parameters for make_encoder:
+# ==============================================================================
+# None.
+
+# Parameters for make_environment_specs:
+# ==============================================================================
+make_environment_specs.encoder = @make_encoder()
+make_environment_specs.training_problems = @make_training_problems()
+
+# Parameters for make_network:
+# ==============================================================================
+make_network.final_hidden_units = %FINAL_HIDDEN_UNITS
+make_network.max_arity = %MAX_ARITY
+make_network.num_hidden_units = %MLP_HIDDEN_UNITS
+make_network.num_nlm_layers = %NUM_LAYERS
+make_network.residual = %RESIDUAL_NLM
+make_network.with_permute = %WITH_PERMUTE
+make_network.activation = "sigmoid"
+
+# Parameters for make_training_problems:
+# ==============================================================================
+make_training_problems.domain_path = %DOMAIN_PATH
+make_training_problems.problem_dir = %TRAIN_PROBLEM_DIR
+
+# Parameters for nlm_layer:
+# ==============================================================================
+# None.
+
+# Parameters for nlm_reduce:
+# ==============================================================================
+nlm_reduce.mask = None
+nlm_reduce.reduce_fn = None
+
+# Parameters for pddlgym_env:
+# ==============================================================================
+pddlgym_env.domain_path = %DOMAIN_PATH
+pddlgym_env.problem_dir = %TRAIN_PROBLEM_DIR
+pddlgym_env.problem_index = None
+pddlgym_env.random_reachable_init = False
+
+# Parameters for Heuristic:
+# ==============================================================================
+Heuristic.name = %SHAPING_HEURISTIC
+Heuristic.discount = %DISCOUNT
+
+# Parameters for PDDLDynamics:
+# ==============================================================================
+PDDLDynamics.discount = %DISCOUNT
+PDDLDynamics.heuristic = @Heuristic()
+PDDLDynamics.use_cost_reward = %USE_COST_FUNCTION
+
+
+# Parameters for run:
+# ==============================================================================
+run.agent_cls = @AVIAgent
+run.env_cls = @pddlgym_env
+run.seed = %SEED
+
+# Parameters for SimpleSaver:
+# ==============================================================================
+SimpleSaver.dir_path = %TRAIN_DIR
+
+# Parameters for softmax:
+# ==============================================================================
+softmax.temperature = %TEMPERATURE
+

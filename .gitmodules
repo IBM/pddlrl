@@ -1,0 +1,7 @@
+[submodule "VAL"]
+	path = VAL
+	url = https://github.com/KCL-Planning/VAL.git
+[submodule "roswell"]
+	path = roswell
+	url = https://github.com/roswell/roswell.git
+	branch = release

@@ -1,0 +1,113 @@
+#!/bin/sh
+#|-*- mode:lisp -*-|#
+#| <Put a one-line description here>
+exec ros -Q -- $0 "$@"
+|#
+
+;; This file is a part of PDDLRL project.
+;; Copyright (c) 2020 Clement Gehring (clement@gehring.io)
+;; Copyright (c) 2021 Masataro Asai (guicho2.71828@gmail.com, masataro.asai@ibm.com), IBM Corporation
+
+
+(declaim (sb-ext:muffle-conditions style-warning))
+
+;;
+;; This script plots the number of objects in the x-axis, and the number of failed instances in the y-axis.
+;; In satellite domain, the number of objects are put into bins of width 20.
+;; The plot illustrates how the neural network is generalized across different number of objects.
+;;
+
+(progn ;;init forms
+  (ros:ensure-asdf)
+  #+quicklisp (ql:quickload '(:eazy-gnuplot :yason :trivia :cl-ppcre :trivia.ppcre :iterate :cl-colors2 :function-cache) :silent t)
+  )
+
+(defpackage :ros.script.plot-init
+  (:use :cl :eazy-gnuplot :alexandria :trivia :ppcre :trivia.ppcre :iterate :function-cache)
+  (:import-from :cl-colors2 :rgb :rgb-red :rgb-blue :rgb-green))
+(in-package :ros.script.plot-init)
+
+(defcached parse-json (filename)
+  ;; (format t "; loading ~a ~%" (enough-namestring filename))
+  (with-open-file (f filename)
+    (yason:parse f)))
+
+
+(setf yason:*parse-object-as* :hash-table)
+(setf yason:*parse-json-booleans-as-symbols* nil)
+(setf yason:*parse-object-key-fn* #'read-from-string)
+
+(defun objects (log)
+  (parse-integer (subseq (gethash 'problem log) 1 4)))
+
+(defvar *plot-stream*)
+
+(defvar *evaluation-threshold* 2000)
+
+(defun solved-p (log)
+  (and (eq t (gethash 'solved log))
+       (<= (gethash 'evaluated_states log) *evaluation-threshold*)))
+
+(defun jitter (mean width)
+  (+ mean (random width) (- (/ width 2.0))))
+
+(defvar *histogram-width* 1)
+
+(defun produce-points (dirname *histogram-width*)
+  (iter (with solved-db = (make-hash-table :test 'equal))
+        (with total-db  = (make-hash-table :test 'equal))
+        (for logfile in (directory (format nil "~a/*/*.json" dirname)))
+        (for hash = (lastcar (pathname-directory logfile)))
+        (for log = (parse-json logfile))
+        (for objs = (* (floor (objects log) *histogram-width*) *histogram-width*))
+        ;; (break)
+        (incf (gethash (list hash objs) total-db 0))
+        (when (solved-p log)
+          (incf (gethash (list hash objs) solved-db 0)))
+
+        (finally
+         (iter (for (key total) in-hashtable total-db)
+               (for solved = (gethash key solved-db 0))
+               (for failed = (- total solved))
+               (for objs = (second key))
+               (format *plot-stream* "~&~a ~a" (jitter objs 1.0) (float (/ failed total)))))))
+
+(defun main (&optional (search "*") (heur "*") (domain "*") (dir "apr15") (track "*") &rest argv)
+  (declare (ignorable argv))
+  (dolist (*evaluation-threshold* '(1000 3000 10000 30000 100000))
+    (with-plots (*plot-stream*)
+      (gp-setup :output (substitute #\_ #\* (format nil "objs-~{~a~^-~}-~6,'0d.pdf" (list dir domain heur search) *evaluation-threshold*))
+                :terminal `(:pdf :enhanced
+                                 :size
+                                 (2 3) ; inch ; half column, US letterpaper
+                                 ;; (800 800)
+                                 ;; :dashed
+                                 ;; :background :rgb ,(if improved "white" "gray90")
+                                 ;; :monochrome
+                                 :font "Times New Roman, 11")
+                :key '(:above :horizontal :maxcols 2)
+                ;; :xrange '(0 80)
+                :yrange '(-0.2 1.1)
+                ;; :logscale :xy
+                ;; :format '(xy "10^%T")
+                :mxtics :default
+                :mytics :default
+                :pointsize 0.3
+                :title (format nil "~a, threshold = ~a" domain *evaluation-threshold*)
+                :xlabel "Number of objects"
+                :ylabel "% of failed instances"
+                )
+      (iter (for eval-root-dir in (append (directory (format nil "~a-nonRL/~a/~a/~a-True-~a/" dir track domain heur search))
+                                          (directory (format nil "~a/~a/~a/~a-True-~a/" dir track domain heur search))))
+            (for dirname = (enough-namestring eval-root-dir))
+            (plot (curry #'produce-points dirname (if (string= "satellite" domain) 20 1))
+                  :title (ematch (pathname dirname)
+                           ((pathname :directory (list :relative base _ domain (split "-" heur _ search)))
+                            (format nil "~a^{~a}"
+                                    (if (search "nonRL" dirname) "h" "H")
+                                    (match heur
+                                      ("blind" "blind")
+                                      ("hff" "ff")
+                                      ("hmax" "max")
+                                      ("hadd" "add")))))
+                  :with (if (search "nonRL" dirname) :lines :points))))))

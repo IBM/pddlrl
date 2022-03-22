@@ -1,0 +1,75 @@
+#!/bin/sh
+#|-*- mode:lisp -*-|#
+#| <Put a one-line description here>
+exec ros -Q -- $0 "$@"
+|#
+
+;; This file is a part of PDDLRL project.
+;; Copyright (c) 2020 Clement Gehring (clement@gehring.io)
+;; Copyright (c) 2021 Masataro Asai (guicho2.71828@gmail.com, masataro.asai@ibm.com), IBM Corporation
+
+(progn ;;init forms
+  (ros:ensure-asdf)
+  #+quicklisp (ql:quickload '(:eazy-gnuplot :yason :numcl :trivia :cl-ppcre :trivia.ppcre :iterate) :silent t)
+  )
+
+(declaim (sb-ext:muffle-conditions style-warning))
+
+;; This script compares the number of test instances solved (y-axis) against training iteration (x-axis)
+;; The iteration steps to be plotted depends on how frequently the network weight snapshop is saved during the training.
+
+(defpackage :ros.script.plot-init
+  (:use :cl :eazy-gnuplot :alexandria :trivia :ppcre :trivia.ppcre :iterate))
+(in-package :ros.script.plot-init)
+
+(setf yason:*parse-object-as* :hash-table)
+(setf yason:*parse-json-booleans-as-symbols* nil)
+(setf yason:*parse-object-key-fn* #'read-from-string)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun main-config (s config-dir)
+  (let* ((learning-curves (yason:parse (merge-pathnames "learning-curve.json" config-dir))))
+    (plot (lambda ()
+            (iter (for iteration in '(1000 10000 20000 30000 40000 50000))
+                  (iter (for (name curve-per-seed) in learning-curves)
+                        (for (_ solved) = (assoc iteration curve-per-seed))
+                        (when solved
+                          (minimizing solved into lb)
+                          (maximizing solved into ub)
+                          (collecting solved into all))
+                        (finally
+                         (when all
+                           (format s "~&~a ~a ~a ~a" iteration (float (median all)) lb ub))))))
+          :title (lastcar (pathname-directory config-dir))
+          :with :yerrorlines)))
+
+(defun main (domain-dir search)
+  (with-plots (s :debug t)
+    (gp-setup :output (format nil "~a/learning-curve-~a.pdf" domain-dir search)
+              :terminal `(:pdf ;; :enhanced
+                          ;; :size
+                          ;; (3.3 3.3) ; inch ; half column, US letterpaper
+                          ;; (800 800)
+                          ;; :dashed
+                          ;; :background :rgb ,(if improved "white" "gray90")
+                          ;; :monochrome
+                          :font "Times New Roman, 11")
+              ;; :size :square
+              :xrange `(-1000 51000)
+              :yrange `(-1 11)
+              ;; :view '(:equal :xy)
+              :key '(:bottom :right)
+              :pointsize 0.3
+              ;; :logscale :xy
+              ;; :format '(xy "10^%T")
+              ;; :mxtics :default
+              ;; :mytics :default
+              :title (format nil "~&~a-~a" domain-dir search)
+              :ylabel "instances solved"
+              :xlabel "training iteration")
+    (mapc (curry #'main-config s) (directory (format nil "~a/*~a/" domain-dir search)))))
+
+;; (trace main main-config)
+
+;;; vim: set ft=lisp lisp:

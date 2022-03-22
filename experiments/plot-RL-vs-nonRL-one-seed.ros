@@ -1,0 +1,169 @@
+#!/bin/sh
+#|-*- mode:lisp -*-|#
+#| <Put a one-line description here>
+exec ros -Q -- $0 "$@"
+|#
+
+;; This file is a part of PDDLRL project.
+;; Copyright (c) 2020 Clement Gehring (clement@gehring.io)
+;; Copyright (c) 2021 Masataro Asai (guicho2.71828@gmail.com, masataro.asai@ibm.com), IBM Corporation
+
+(progn ;;init forms
+  (ros:ensure-asdf)
+  #+quicklisp (ql:quickload '(:eazy-gnuplot :yason :numcl :trivia :cl-ppcre :trivia.ppcre :iterate) :silent t)
+  )
+
+(declaim (sb-ext:muffle-conditions style-warning))
+
+;; This script creates two sets of plots for two evaluation metrics: the number of node expansions of gbfs and the search time of gbfs.
+;; For each metric, it compares a baseline heuristic function and a learned heuristic function.
+;; Points corresponding to each domain are marked with a numbered label.
+;; It compares one seed of learned heuristics against one baseline which is deterministic.
+;; We choose the seed which obtained the smallest bellman loss at the end of the training.
+;; See also: plot-RL-vs-nonRL-many-seeds.ros
+
+(defpackage :ros.script.plot-init
+  (:use :cl :eazy-gnuplot :alexandria :trivia :ppcre :trivia.ppcre :iterate))
+(in-package :ros.script.plot-init)
+
+(setf yason:*parse-object-as* :hash-table)
+(setf yason:*parse-json-booleans-as-symbols* nil)
+(setf yason:*parse-object-key-fn* #'read-from-string)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; database-like query
+
+(defun join (db &rest dbs)
+  (apply #'mapcar
+         (lambda (entry &rest entries)
+           (ematch entry
+             ((cons key value)
+              (cons key (list* value (mapcar #'cdr entries))))))
+         db
+         dbs))
+
+(defun select (db query)
+  (ematch query
+    ((list pattern-from pattern-to)
+     (let ((fn (compile nil
+                        `(lambda (db)
+                           (iter (for entry in db)
+                                 (match entry
+                                   ((cons ,pattern-from value)
+                                    (collecting
+                                     (cons ,pattern-to value)))))))))
+       (funcall fn db)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun parse-log-path (logfile)
+  ;; feb15/domains2/freecell/blind-True-gbfs/grid_search.log
+  ;; (ematch (pathname logfile)
+  ;;   ((pathname :directory (last (list experiment-set
+  ;;                                     domain-set
+  ;;                                     domain
+  ;;                                     (split "-" heur "True" search))
+  ;;                               4))
+  ;;    (list experiment-set domain-set domain heur search)))
+  (ematch (pathname logfile)
+    ((pathname :directory (last (list (read experiment-set)
+                                      (read domain-set)
+                                      (read domain)
+                                      (split "-" (read heur) "True" (read search)))
+                                4))
+     (list experiment-set domain-set domain heur search))))
+
+(defun parse-json-stream (s)
+  (iter (for entry = (ignore-errors (yason:parse s)))
+        (while entry)
+        (collect entry)))
+
+(defun parse-log (directory-RL directory-nonRL)
+  (append
+   (%parse-log directory-RL)
+   (%parse-log directory-nonRL)))
+
+(defun %parse-log (directory)
+  (mappend #'%%parse-log (directory (concatenate 'string directory "/**/grid_search.log"))))
+
+(defun %%parse-log (logfile)
+  (let ((key (parse-log-path logfile))
+        (best-entry
+         (with-open-file (s logfile)
+           (iter (for entry in (parse-json-stream s))
+                 (for (score run) = entry)
+                 (while entry)
+                 (finding entry minimizing score)))))
+    (ematch best-entry
+      ((list _ run-dir)
+       (let ((problem-logs
+              (handler-case
+                  (with-open-file (s (concatenate 'string run-dir "/" "logs.json"))
+                    (yason:parse s))
+                (file-error (e)
+                  (format *error-output* "logfile ~a missing!~%" (file-error-pathname e))
+                  (return-from %%parse-log)))))
+         (iter outer
+               (for problem-log in problem-logs)
+               (iter (for (subkey value) in-hashtable problem-log)
+                     (when (equal 'problem subkey)
+                       (next-iteration))
+                     (in outer
+                         (collecting
+                          (cons (append key (list (read-from-string (gethash 'problem problem-log)) subkey))
+                                value))))))))))
+
+(defun main (&optional (directory-RL "feb14") (directory-nonRL (concatenate 'string directory-RL "-nonRL")))
+  (let ((results (parse-log directory-RL directory-nonRL)))
+    (iter (for product in
+               (map-product #'list
+                            '(hff blind)
+                            '(gbfs hc)
+                            '(search_time expanded_states)))
+          (for (heur search metric) = product)
+          (for limit = (ecase metric
+                         (search_time 900)
+                         (expanded_states 10000)))
+          (with-plots (s :debug t)
+            (gp-setup :output (format nil "~a-~a-~{~a~^-~}.pdf" directory-RL directory-nonRL product)
+                      :terminal `(:pdf ;; :enhanced
+                                       :size
+                                       (3.3 3.3) ; inch ; half column, US letterpaper
+                                       ;; (800 800)
+                                       ;; :dashed
+                                       ;; :background :rgb ,(if improved "white" "gray90")
+                                       ;; :monochrome
+                                       :font "Times New Roman, 11")
+                      :size :square
+                      :xrange `(0.1 ,(1+ limit))
+                      :yrange `(0.1 ,(1+ limit))
+                      :view '(:equal :xy)
+                      :key '(:bottom :right)
+                      :pointsize 0.3
+                      :logscale :xy
+                      :format '(xy "10^%T")
+                      :mxtics :default
+                      :mytics :default
+                      :title (format nil "~&~{~a~^-~}" product)
+                      :ylabel "With RL"
+                      :xlabel "Without RL")
+            (flet ((postprocess (number)
+                     (if (minusp number)
+                         limit
+                         (ceiling number))))
+              (plot (lambda ()
+                      (iter (for (key . value)
+                                 in (join (select results
+                                                  `((list ',(read-from-string directory-nonRL) 'domains domain ',heur ',search problem ',metric)
+                                                    (list domain problem)))
+                                          (select results
+                                                  `((list ',(read-from-string directory-RL) 'domains domain ',heur ',search problem ',metric)
+                                                    (list domain problem)))))
+                            (format s "~&~{~a~^ ~}" (mapcar #'postprocess value))))
+                    :title (format nil "~{~a~^-~}" product)
+                    :with :point)
+              (plot "x"
+                  :title "x=y"
+                  :with :lines))))))
+
+;;; vim: set ft=lisp lisp:

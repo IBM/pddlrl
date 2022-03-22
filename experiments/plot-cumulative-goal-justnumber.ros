@@ -1,0 +1,57 @@
+#!/bin/sh
+#|-*- mode:lisp -*-|#
+#| <Put a one-line description here>
+exec ros -Q -- $0 "$@"
+|#
+
+;; This file is a part of PDDLRL project.
+;; Copyright (c) 2020 Clement Gehring (clement@gehring.io)
+;; Copyright (c) 2021 Masataro Asai (guicho2.71828@gmail.com, masataro.asai@ibm.com), IBM Corporation
+
+(progn ;;init forms
+  (ros:ensure-asdf)
+  #+quicklisp (ql:quickload '(:eazy-gnuplot :dataloader :numcl :trivia :lparallel :fare-csv) :silent t)
+  )
+
+(declaim (sb-ext:muffle-conditions style-warning))
+
+;; This script creates a table of cumulative number of goals that are achieved during the training.
+;; The results are then used for wilcoxon's rank-sum test for statistical significance.
+;; See also: cumulative-goals-rank-sum-test.ros
+
+(defpackage :ros.script.plot-init
+  (:use :cl :eazy-gnuplot :trivia :iterate))
+(in-package :ros.script.plot-init)
+
+;; (setf lparallel:*kernel* (lparallel:make-kernel 8))
+
+;; (directory "apr15/*/blocks/blind-True/*/*11eb*/logs/*.csv")
+
+;; cl-csv:read-csv
+
+(defun load-file (csv)
+  (numcl:asarray
+   (map 'vector #'parse-integer
+        (rest
+         (mapcar #'first
+                 (fare-csv:with-rfc4180-csv-syntax ()
+                   (let ((fare-csv:*separator* #\,))
+                     (fare-csv:read-csv-file csv))))))))
+
+(defun cumsum (array)
+  (iter (for j from 1 below (length array))
+        (setf (aref array j)
+              (+ (aref array (1- j)) (aref array j))))
+  array)
+
+(defun per-file (csv)
+  (format t "~{~A ~}~a~%" (pathname-directory (uiop:enough-pathname csv *default-pathname-defaults*)) (numcl:sum (load-file csv))))
+
+(defun per-config (dir)
+  (mapc #'per-file (directory (format nil "~a/*/*11ec*/logs/logs.csv" dir))))
+
+(defun main (&optional (track "apr15") (domain "blocks") (heur "blind") &rest argv)
+  (declare (ignorable argv))
+  (mapc #'per-config (directory (format nil "~a/*/~a/~a-True/" track domain heur))))
+
+;;; vim: set ft=lisp lisp:

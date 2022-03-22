@@ -1,0 +1,78 @@
+#!/bin/sh
+#|-*- mode:lisp -*-|#
+#| <Put a one-line description here>
+exec ros -Q -- $0 "$@"
+|#
+
+;; This file is a part of PDDLRL project.
+;; Copyright (c) 2020 Clement Gehring (clement@gehring.io)
+;; Copyright (c) 2021 Masataro Asai (guicho2.71828@gmail.com, masataro.asai@ibm.com), IBM Corporation
+
+(progn ;;init forms
+  (ros:ensure-asdf)
+  #+quicklisp (ql:quickload '(:eazy-gnuplot :dataloader :numcl :trivia) :silent t)
+  )
+
+(declaim (sb-ext:muffle-conditions style-warning))
+
+;; This script plots the cumulative number of goals that are achieved during the training.
+
+(defpackage :ros.script.plot-init
+  (:use :cl :eazy-gnuplot :trivia :iterate))
+(in-package :ros.script.plot-init)
+
+;; (directory "apr15/*/blocks/blind-True/*/*11eb*/logs/*.csv")
+
+(defun load-file (csv)
+  (numcl:aref
+   (dataloader:load csv
+                    :map-fn (lambda (data) (mapcar #'read-from-string data))
+                    :skip-first-p t)
+   t 0))
+
+(defun cumsum (array)
+  (iter (for j from 1 below (length array))
+        (setf (aref array j)
+              (+ (aref array (1- j)) (aref array j))))
+  array)
+
+(defvar *plot-stream*)
+
+(defun per-file (csv)
+  (plot csv
+        :using '(12 1)
+        :notitle '()
+        :with :lines
+        :smooth :cumulative))
+
+
+(defun main (&optional (track "apr15") (domain "blocks") (heur "blind") &rest argv)
+  (declare (ignorable argv))
+  (print (list domain heur))
+  (with-plots (*plot-stream*)
+    (gp-setup :output (format nil "cumulative-goals-~a-~a.pdf" domain heur)
+              :terminal `(:pdf :enhanced
+                               :size
+                               (3.3 3.3) ; inch ; half column, US letterpaper
+                               ;; (800 800)
+                               ;; :dashed
+                               ;; :background :rgb ,(if improved "white" "gray90")
+                               ;; :monochrome
+                               :font "Times New Roman, 11")
+              :size :square
+              :view '(:equal :xy)
+              :key '(:bottom :right)
+              :pointsize 0.3
+              :key '(autotitle columnhead) ;this effectively skips the first row
+              :datafile '(separator comma)
+              ;; :logscale :xy
+              ;; :format '(xy "10^%T")
+              :mxtics :default
+              :mytics :default
+              :title (format nil "cumulative-goals-~a-~a.pdf" domain heur)
+              :xlabel "Step {/:Italic t}"
+              :ylabel "Number of goals achieved")
+
+    (mapcar #'per-file (directory (format nil "~a/*/~a/~a-True/*/*11ec*/logs/logs.csv" track domain heur)))))
+
+;;; vim: set ft=lisp lisp:

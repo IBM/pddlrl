@@ -1,0 +1,387 @@
+#!/bin/sh
+#|-*- mode:lisp -*-|#
+#| <Put a one-line description here>
+exec ros -Q -- $0 "$@"
+|#
+
+;; This file is a part of PDDLRL project.
+;; Copyright (c) 2020 Clement Gehring (clement@gehring.io)
+;; Copyright (c) 2021 Masataro Asai (guicho2.71828@gmail.com, masataro.asai@ibm.com), IBM Corporation
+
+(progn ;;init forms
+  (ros:ensure-asdf)
+  #+quicklisp (ql:quickload '(:eazy-gnuplot :yason :numcl :trivia :cl-ppcre :trivia.ppcre :iterate :cl-colors2) :silent t)
+  )
+
+(declaim (sb-ext:muffle-conditions style-warning))
+
+;; This script creates two sets of plots for two evaluation metrics: the number of node expansions of gbfs and the search time of gbfs.
+;; For each metric, it compares a baseline heuristic function and a learned heuristic function.
+;; Points corresponding to each domain are marked with a numbered label.
+;; It plots all seeds of learned heuristics against one baseline which is deterministic.
+
+(defpackage :ros.script.plot-init
+  (:use :cl :eazy-gnuplot :alexandria :trivia :ppcre :trivia.ppcre :iterate)
+  (:import-from :cl-colors2 :rgb :rgb-red :rgb-blue :rgb-green))
+(in-package :ros.script.plot-init)
+
+(setf yason:*parse-object-as* :hash-table)
+(setf yason:*parse-json-booleans-as-symbols* nil)
+(setf yason:*parse-object-key-fn* #'read-from-string)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; database-like query
+
+(defun join (db &rest dbs)
+  (apply #'mapcar
+         (lambda (entry &rest entries)
+           (ematch entry
+             ((cons key value)
+              (cons key (list* value (mapcar #'cdr entries))))))
+         db
+         dbs))
+
+(defun select (db query)
+  (ematch query
+    ((list pattern-from pattern-to)
+     (let ((fn (compile nil
+                        `(lambda (db)
+                           (iter (for entry in db)
+                                 (match entry
+                                   ((cons ,pattern-from value)
+                                    (collecting
+                                     (cons ,pattern-to value)))))))))
+       (funcall fn db)))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun parse-log-path (logfile)
+  ;; feb15/domains2/freecell/blind-True-gbfs/grid_search.log
+  ;; (ematch (pathname logfile)
+  ;;   ((pathname :directory (last (list experiment-set
+  ;;                                     domain-set
+  ;;                                     domain
+  ;;                                     (split "-" heur "True" search))
+  ;;                               4))
+  ;;    (list experiment-set domain-set domain heur search)))
+  (ematch (pathname logfile)
+    ((pathname :directory (last (list (read experiment-set)
+                                      (read domain-set)
+                                      (read domain)
+                                      (split "-" (read heur) "True" (read search)))
+                                4))
+     (list experiment-set domain-set domain heur search))))
+
+(defun parse-json-stream (s)
+  (iter (for entry = (ignore-errors (yason:parse s)))
+        (while entry)
+        (collect entry)))
+
+(defun parse-log (directory)
+  (append
+   (%parse-log directory)
+   (%parse-log (concatenate 'string directory "-nonRL"))))
+
+(defun %parse-log (directory)
+  (mappend #'%%parse-log (directory (concatenate 'string directory "/**/grid_search.log"))))
+
+(defun %%parse-log (logfile)
+  (with-open-file (s logfile)
+    (iter outer
+          (with key = (parse-log-path logfile))
+          (for entry in (parse-json-stream s))
+          (for (score run-dir) = entry)
+          (match (pathname run-dir)
+            ;; "feb15/domains2/freecell/blind-True-gbfs/949c2374aa3ef5c7eef2ba28d2cb092b"
+            ((pathname :directory (list :relative
+                                        experiment-set
+                                        domain-set
+                                        domain
+                                        (split "-" heur "True" (read (eq 'gbfs))))
+                       :name hash)
+             (let* ((hyper
+                     (handler-case
+                         (with-open-file (s (format nil "~@{~A~^/~}"
+                                                    experiment-set
+                                                    domain-set
+                                                    domain
+                                                    (concatenate 'string heur "-" "True")
+                                                    hash
+                                                    "hyper.json"))
+                           (yason:parse s))
+                       (file-error (e)
+                         (format *error-output* "hyperfile ~a missing!~%" (file-error-pathname e))
+                         (next-iteration))))
+                    (problem-logs
+                     (handler-case
+                         (with-open-file (s (format nil "~a/logs.json" run-dir))
+                           (yason:parse s))
+                       (file-error (e)
+                         (format *error-output* "logfile ~a missing!~%" (file-error-pathname e))
+                         (next-iteration)))))
+               (iter (for problem-log in problem-logs)
+                     (iter (for (subkey value) in-hashtable problem-log)
+                           (when (equal 'problem subkey)
+                             (next-iteration))
+                           (in outer
+                               (collecting
+                                (cons (append key (list (read-from-string (gethash 'problem problem-log))
+                                                        (gethash 'seed hyper)
+                                                        subkey))
+                                      value)))))))))))
+
+(progn
+  (cl-colors2::define-rgb-color "aliceblue" #xf0/100 #xf8/100 #xff/100)
+  (cl-colors2::define-rgb-color "antiquewhite" #xfa/100 #xeb/100 #xd7/100)
+  (cl-colors2::define-rgb-color "aqua" #x00/100 #xff/100 #xff/100)
+  (cl-colors2::define-rgb-color "aquamarine" #x7f/100 #xff/100 #xd4/100)
+  (cl-colors2::define-rgb-color "azure" #xf0/100 #xff/100 #xff/100)
+  (cl-colors2::define-rgb-color "beige" #xf5/100 #xf5/100 #xdc/100)
+  (cl-colors2::define-rgb-color "bisque" #xff/100 #xe4/100 #xc4/100)
+  (cl-colors2::define-rgb-color "black" #x00/100 #x00/100 #x00/100)
+  (cl-colors2::define-rgb-color "blanchedalmond" #xff/100 #xeb/100 #xcd/100)
+  (cl-colors2::define-rgb-color "blue" #x00/100 #x00/100 #xff/100)
+  (cl-colors2::define-rgb-color "blueviolet" #x8a/100 #x2b/100 #xe2/100)
+  (cl-colors2::define-rgb-color "brown" #xa5/100 #x2a/100 #x2a/100)
+  (cl-colors2::define-rgb-color "burlywood" #xde/100 #xb8/100 #x87/100)
+  (cl-colors2::define-rgb-color "cadetblue" #x5f/100 #x9e/100 #xa0/100)
+  (cl-colors2::define-rgb-color "chartreuse" #x7f/100 #xff/100 #x00/100)
+  (cl-colors2::define-rgb-color "chocolate" #xd2/100 #x69/100 #x1e/100)
+  (cl-colors2::define-rgb-color "coral" #xff/100 #x7f/100 #x50/100)
+  (cl-colors2::define-rgb-color "cornflowerblue" #x64/100 #x95/100 #xed/100)
+  (cl-colors2::define-rgb-color "cornsilk" #xff/100 #xf8/100 #xdc/100)
+  (cl-colors2::define-rgb-color "crimson" #xdc/100 #x14/100 #x3c/100)
+  (cl-colors2::define-rgb-color "cyan" #x00/100 #xff/100 #xff/100)
+  (cl-colors2::define-rgb-color "darkblue" #x00/100 #x00/100 #x8b/100)
+  (cl-colors2::define-rgb-color "darkcyan" #x00/100 #x8b/100 #x8b/100)
+  (cl-colors2::define-rgb-color "darkgoldenrod" #xb8/100 #x86/100 #x0b/100)
+  (cl-colors2::define-rgb-color "darkgray" #xa9/100 #xa9/100 #xa9/100)
+  (cl-colors2::define-rgb-color "darkgreen" #x00/100 #x64/100 #x00/100)
+  (cl-colors2::define-rgb-color "darkgrey" #xa9/100 #xa9/100 #xa9/100)
+  (cl-colors2::define-rgb-color "darkkhaki" #xbd/100 #xb7/100 #x6b/100)
+  (cl-colors2::define-rgb-color "darkmagenta" #x8b/100 #x00/100 #x8b/100)
+  (cl-colors2::define-rgb-color "darkolivegreen" #x55/100 #x6b/100 #x2f/100)
+  (cl-colors2::define-rgb-color "darkorange" #xff/100 #x8c/100 #x00/100)
+  (cl-colors2::define-rgb-color "darkorchid" #x99/100 #x32/100 #xcc/100)
+  (cl-colors2::define-rgb-color "darkred" #x8b/100 #x00/100 #x00/100)
+  (cl-colors2::define-rgb-color "darksalmon" #xe9/100 #x96/100 #x7a/100)
+  (cl-colors2::define-rgb-color "darkseagreen" #x8f/100 #xbc/100 #x8f/100)
+  (cl-colors2::define-rgb-color "darkslateblue" #x48/100 #x3d/100 #x8b/100)
+  (cl-colors2::define-rgb-color "darkslategray" #x2f/100 #x4f/100 #x4f/100)
+  (cl-colors2::define-rgb-color "darkslategrey" #x2f/100 #x4f/100 #x4f/100)
+  (cl-colors2::define-rgb-color "darkturquoise" #x00/100 #xce/100 #xd1/100)
+  (cl-colors2::define-rgb-color "darkviolet" #x94/100 #x00/100 #xd3/100)
+  (cl-colors2::define-rgb-color "deeppink" #xff/100 #x14/100 #x93/100)
+  (cl-colors2::define-rgb-color "deepskyblue" #x00/100 #xbf/100 #xff/100)
+  (cl-colors2::define-rgb-color "dimgray" #x69/100 #x69/100 #x69/100)
+  (cl-colors2::define-rgb-color "dimgrey" #x69/100 #x69/100 #x69/100)
+  (cl-colors2::define-rgb-color "dodgerblue" #x1e/100 #x90/100 #xff/100)
+  (cl-colors2::define-rgb-color "firebrick" #xb2/100 #x22/100 #x22/100)
+  (cl-colors2::define-rgb-color "floralwhite" #xff/100 #xfa/100 #xf0/100)
+  (cl-colors2::define-rgb-color "forestgreen" #x22/100 #x8b/100 #x22/100)
+  (cl-colors2::define-rgb-color "fuchsia" #xff/100 #x00/100 #xff/100)
+  (cl-colors2::define-rgb-color "gainsboro" #xdc/100 #xdc/100 #xdc/100)
+  (cl-colors2::define-rgb-color "ghostwhite" #xf8/100 #xf8/100 #xff/100)
+  (cl-colors2::define-rgb-color "gold" #xff/100 #xd7/100 #x00/100)
+  (cl-colors2::define-rgb-color "goldenrod" #xda/100 #xa5/100 #x20/100)
+  (cl-colors2::define-rgb-color "gray" #x80/100 #x80/100 #x80/100)
+  (cl-colors2::define-rgb-color "green" #x00/100 #x80/100 #x00/100)
+  (cl-colors2::define-rgb-color "greenyellow" #xad/100 #xff/100 #x2f/100)
+  (cl-colors2::define-rgb-color "grey" #x80/100 #x80/100 #x80/100)
+  (cl-colors2::define-rgb-color "honeydew" #xf0/100 #xff/100 #xf0/100)
+  (cl-colors2::define-rgb-color "hotpink" #xff/100 #x69/100 #xb4/100)
+  (cl-colors2::define-rgb-color "indianred" #xcd/100 #x5c/100 #x5c/100)
+  (cl-colors2::define-rgb-color "indigo" #x4b/100 #x00/100 #x82/100)
+  (cl-colors2::define-rgb-color "ivory" #xff/100 #xff/100 #xf0/100)
+  (cl-colors2::define-rgb-color "khaki" #xf0/100 #xe6/100 #x8c/100)
+  (cl-colors2::define-rgb-color "lavender" #xe6/100 #xe6/100 #xfa/100)
+  (cl-colors2::define-rgb-color "lavenderblush" #xff/100 #xf0/100 #xf5/100)
+  (cl-colors2::define-rgb-color "lawngreen" #x7c/100 #xfc/100 #x00/100)
+  (cl-colors2::define-rgb-color "lemonchiffon" #xff/100 #xfa/100 #xcd/100)
+  (cl-colors2::define-rgb-color "lightblue" #xad/100 #xd8/100 #xe6/100)
+  (cl-colors2::define-rgb-color "lightcoral" #xf0/100 #x80/100 #x80/100)
+  (cl-colors2::define-rgb-color "lightcyan" #xe0/100 #xff/100 #xff/100)
+  (cl-colors2::define-rgb-color "lightgoldenrodyellow" #xfa/100 #xfa/100 #xd2/100)
+  (cl-colors2::define-rgb-color "lightgray" #xd3/100 #xd3/100 #xd3/100)
+  (cl-colors2::define-rgb-color "lightgreen" #x90/100 #xee/100 #x90/100)
+  (cl-colors2::define-rgb-color "lightgrey" #xd3/100 #xd3/100 #xd3/100)
+  (cl-colors2::define-rgb-color "lightpink" #xff/100 #xb6/100 #xc1/100)
+  (cl-colors2::define-rgb-color "lightsalmon" #xff/100 #xa0/100 #x7a/100)
+  (cl-colors2::define-rgb-color "lightseagreen" #x20/100 #xb2/100 #xaa/100)
+  (cl-colors2::define-rgb-color "lightskyblue" #x87/100 #xce/100 #xfa/100)
+  (cl-colors2::define-rgb-color "lightslategray" #x77/100 #x88/100 #x99/100)
+  (cl-colors2::define-rgb-color "lightslategrey" #x77/100 #x88/100 #x99/100)
+  (cl-colors2::define-rgb-color "lightsteelblue" #xb0/100 #xc4/100 #xde/100)
+  (cl-colors2::define-rgb-color "lightyellow" #xff/100 #xff/100 #xe0/100)
+  (cl-colors2::define-rgb-color "lime" #x00/100 #xff/100 #x00/100)
+  (cl-colors2::define-rgb-color "limegreen" #x32/100 #xcd/100 #x32/100)
+  (cl-colors2::define-rgb-color "linen" #xfa/100 #xf0/100 #xe6/100)
+  (cl-colors2::define-rgb-color "magenta" #xff/100 #x00/100 #xff/100)
+  (cl-colors2::define-rgb-color "maroon" #x80/100 #x00/100 #x00/100)
+  (cl-colors2::define-rgb-color "mediumaquamarine" #x66/100 #xcd/100 #xaa/100)
+  (cl-colors2::define-rgb-color "mediumblue" #x00/100 #x00/100 #xcd/100)
+  (cl-colors2::define-rgb-color "mediumorchid" #xba/100 #x55/100 #xd3/100)
+  (cl-colors2::define-rgb-color "mediumpurple" #x93/100 #x70/100 #xdb/100)
+  (cl-colors2::define-rgb-color "mediumseagreen" #x3c/100 #xb3/100 #x71/100)
+  (cl-colors2::define-rgb-color "mediumslateblue" #x7b/100 #x68/100 #xee/100)
+  (cl-colors2::define-rgb-color "mediumspringgreen" #x00/100 #xfa/100 #x9a/100)
+  (cl-colors2::define-rgb-color "mediumturquoise" #x48/100 #xd1/100 #xcc/100)
+  (cl-colors2::define-rgb-color "mediumvioletred" #xc7/100 #x15/100 #x85/100)
+  (cl-colors2::define-rgb-color "midnightblue" #x19/100 #x19/100 #x70/100)
+  (cl-colors2::define-rgb-color "mintcream" #xf5/100 #xff/100 #xfa/100)
+  (cl-colors2::define-rgb-color "mistyrose" #xff/100 #xe4/100 #xe1/100)
+  (cl-colors2::define-rgb-color "moccasin" #xff/100 #xe4/100 #xb5/100)
+  (cl-colors2::define-rgb-color "navajowhite" #xff/100 #xde/100 #xad/100)
+  (cl-colors2::define-rgb-color "navy" #x00/100 #x00/100 #x80/100)
+  (cl-colors2::define-rgb-color "oldlace" #xfd/100 #xf5/100 #xe6/100)
+  (cl-colors2::define-rgb-color "olive" #x80/100 #x80/100 #x00/100)
+  (cl-colors2::define-rgb-color "olivedrab" #x6b/100 #x8e/100 #x23/100)
+  (cl-colors2::define-rgb-color "orange" #xff/100 #xa5/100 #x00/100)
+  (cl-colors2::define-rgb-color "orangered" #xff/100 #x45/100 #x00/100)
+  (cl-colors2::define-rgb-color "orchid" #xda/100 #x70/100 #xd6/100)
+  (cl-colors2::define-rgb-color "palegoldenrod" #xee/100 #xe8/100 #xaa/100)
+  (cl-colors2::define-rgb-color "palegreen" #x98/100 #xfb/100 #x98/100)
+  (cl-colors2::define-rgb-color "paleturquoise" #xaf/100 #xee/100 #xee/100)
+  (cl-colors2::define-rgb-color "palevioletred" #xdb/100 #x70/100 #x93/100)
+  (cl-colors2::define-rgb-color "papayawhip" #xff/100 #xef/100 #xd5/100)
+  (cl-colors2::define-rgb-color "peachpuff" #xff/100 #xda/100 #xb9/100)
+  (cl-colors2::define-rgb-color "peru" #xcd/100 #x85/100 #x3f/100)
+  (cl-colors2::define-rgb-color "pink" #xff/100 #xc0/100 #xcb/100)
+  (cl-colors2::define-rgb-color "plum" #xdd/100 #xa0/100 #xdd/100)
+  (cl-colors2::define-rgb-color "powderblue" #xb0/100 #xe0/100 #xe6/100)
+  (cl-colors2::define-rgb-color "purple" #x80/100 #x00/100 #x80/100)
+  (cl-colors2::define-rgb-color "red" #xff/100 #x00/100 #x00/100)
+  (cl-colors2::define-rgb-color "rosybrown" #xbc/100 #x8f/100 #x8f/100)
+  (cl-colors2::define-rgb-color "royalblue" #x41/100 #x69/100 #xe1/100)
+  (cl-colors2::define-rgb-color "saddlebrown" #x8b/100 #x45/100 #x13/100)
+  (cl-colors2::define-rgb-color "salmon" #xfa/100 #x80/100 #x72/100)
+  (cl-colors2::define-rgb-color "sandybrown" #xf4/100 #xa4/100 #x60/100)
+  (cl-colors2::define-rgb-color "seagreen" #x2e/100 #x8b/100 #x57/100)
+  (cl-colors2::define-rgb-color "seashell" #xff/100 #xf5/100 #xee/100)
+  (cl-colors2::define-rgb-color "sienna" #xa0/100 #x52/100 #x2d/100)
+  (cl-colors2::define-rgb-color "silver" #xc0/100 #xc0/100 #xc0/100)
+  (cl-colors2::define-rgb-color "skyblue" #x87/100 #xce/100 #xeb/100)
+  (cl-colors2::define-rgb-color "slateblue" #x6a/100 #x5a/100 #xcd/100)
+  (cl-colors2::define-rgb-color "slategray" #x70/100 #x80/100 #x90/100)
+  (cl-colors2::define-rgb-color "slategrey" #x70/100 #x80/100 #x90/100)
+  (cl-colors2::define-rgb-color "snow" #xff/100 #xfa/100 #xfa/100)
+  (cl-colors2::define-rgb-color "springgreen" #x00/100 #xff/100 #x7f/100)
+  (cl-colors2::define-rgb-color "steelblue" #x46/100 #x82/100 #xb4/100)
+  (cl-colors2::define-rgb-color "tan" #xd2/100 #xb4/100 #x8c/100)
+  (cl-colors2::define-rgb-color "teal" #x00/100 #x80/100 #x80/100)
+  (cl-colors2::define-rgb-color "thistle" #xd8/100 #xbf/100 #xd8/100)
+  (cl-colors2::define-rgb-color "tomato" #xff/100 #x63/100 #x47/100)
+  (cl-colors2::define-rgb-color "turquoise" #x40/100 #xe0/100 #xd0/100)
+  (cl-colors2::define-rgb-color "violet" #xee/100 #x82/100 #xee/100)
+  (cl-colors2::define-rgb-color "wheat" #xf5/100 #xde/100 #xb3/100)
+  (cl-colors2::define-rgb-color "white" #xff/100 #xff/100 #xff/100)
+  (cl-colors2::define-rgb-color "whitesmoke" #xf5/100 #xf5/100 #xf5/100)
+  (cl-colors2::define-rgb-color "yellow" #xff/100 #xff/100 #x00/100)
+  (cl-colors2::define-rgb-color "yellowgreen" #x9a/100 #xcd/100 #x32/100))
+
+(defun main (&optional (dirname "feb16"))
+  (let* ((results (parse-log dirname))
+         (domains (remove-duplicates
+                   (mapcar #'car
+                           (select results
+                                   `((list 'feb16-nonRL _ domain 'hff 'gbfs _ 1000 'search_time)
+                                     domain)))
+                   :test 'equal))
+         (colors (list +maroon+ +red+
+                       +purple+ +magenta+
+                       +darkgreen+ +green+
+                       +olive+ +gold+ +yellow+
+                       +navy+ +blue+
+                       +teal+ +aqua+
+                       ;;
+                       +orangered+ +orange+
+                       +saddlebrown+
+                       +black+ +gray+
+                       +firebrick+ +crimson+
+                       +darkgreen+
+                       +indigo+ +hotpink+))
+         (domcolor (mapcar (lambda (domain color)
+                             (cons domain
+                                   (match color
+                                     ((rgb :red r :green g :blue b)
+                                      (+ (round (* r 16777216))
+                                         (round (* g    65536))
+                                         (round (* b      256)))))))
+                           domains
+                           colors)))
+    (print domains)
+    (print (sort (copy-list domcolor) #'< :key #'cdr))
+    (iter (for product in
+               (map-product #'list
+                            '(hff blind)
+                            '(gbfs)
+                            '(search_time expanded_states)))
+          (for (heur search metric) = product)
+          (for limit = (ecase metric
+                         (search_time 900)
+                         (expanded_states 10000)))
+          (with-plots (s :debug t)
+            (gp-setup :output (format nil "feb16-v4-~{~a~^-~}.pdf" product)
+                      :terminal `(:pdf ;; :enhanced
+                                       :size
+                                       (3.3 3.3) ; inch ; half column, US letterpaper
+                                       ;; (800 800)
+                                       ;; :dashed
+                                       ;; :background :rgb ,(if improved "white" "gray90")
+                                       ;; :monochrome
+                                       :font "Times New Roman, 11")
+                      :size :square
+                      :xrange `(1 ,(1+ limit))
+                      :yrange `(1 ,(1+ limit))
+                      :view '(:equal :xy)
+                      :key '(:bottom :right)
+                      :pointsize 0.3
+                      :logscale :xy
+                      :format '(xy "10^%T")
+                      :mxtics :default
+                      :mytics :default
+                      :title (format nil "~&~{~a~^-~}" product)
+                      :ylabel "With RL"
+                      :xlabel "Without RL")
+            (flet ((postprocess (number)
+                     (if (minusp number)
+                         limit
+                         (ceiling number))))
+              (gp :set :encoding :utf8)
+              ;; (gp "symbol(z) = \"•✷+△♠□♣♥♦\"[int(z):int(z)]")
+              ;; (gp '|symbol(z) = "+×△○□"[int(z):int(z)]|)
+              (gp '|symbol(z) = "0123456789"[int(z):int(z)]|)
+              (plot (lambda ()
+                      (iter (for ((domain problem) . (nonRL RL))
+                                 in (join (let ((tmp (select results
+                                                             `((list 'feb16-nonRL _ domain ',heur ',search problem seed ',metric)
+                                                               (list domain problem seed)))))
+                                            (join (select tmp `((list domain problem 1000) (list domain problem)))
+                                                  (select tmp `((list domain problem 2000) (list domain problem)))
+                                                  (select tmp `((list domain problem 3000) (list domain problem)))
+                                                  (select tmp `((list domain problem 4000) (list domain problem)))
+                                                  (select tmp `((list domain problem 5000) (list domain problem)))))
+                                          (let ((tmp (select results
+                                                             `((list 'feb16 _ domain ',heur ',search problem seed ',metric)
+                                                               (list domain problem seed)))))
+                                            (join (select tmp `((list domain problem 1000) (list domain problem)))
+                                                  (select tmp `((list domain problem 2000) (list domain problem)))
+                                                  (select tmp `((list domain problem 3000) (list domain problem)))
+                                                  (select tmp `((list domain problem 4000) (list domain problem)))
+                                                  (select tmp `((list domain problem 5000) (list domain problem)))))))
+                            (let ((nonRL (sort (mapcar #'postprocess nonRL) #'<))
+                                  (RL    (sort (mapcar #'postprocess RL) #'<)))
+                              (ignore-errors
+                                (format s "~&~{~{~a~^ ~}~^~%~}"
+                                        (mapcar #'list nonRL RL
+                                                (iota (length RL))
+                                                (make-list (length RL) :initial-element (cdr (assoc domain domcolor)))))))))
+                    :using '(1 2 |(symbol($3))| 4)
+                    :title (format nil "~{~a~^-~}" product)
+                    :with :labels
+                    :textcolor '(:rgb :variable))
+              (plot "x"
+                  :title "x=y"
+                  :with :lines))))))
+
+;;; vim: set ft=lisp lisp:

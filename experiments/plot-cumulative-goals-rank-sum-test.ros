@@ -1,0 +1,101 @@
+#!/bin/sh
+#|-*- mode:lisp -*-|#
+#|
+exec ros dynamic-space-size=8000 -Q -- $0 "$@"
+|#
+
+;; This file is a part of PDDLRL project.
+;; Copyright (c) 2020 Clement Gehring (clement@gehring.io)
+;; Copyright (c) 2021 Masataro Asai (guicho2.71828@gmail.com, masataro.asai@ibm.com), IBM Corporation
+
+(progn ;;init forms
+  (ros:ensure-asdf)
+  #+quicklisp (ql:quickload '(:eazy-gnuplot :dataloader :numcl :trivia :fare-csv :cl-mathstats) :silent t)
+  )
+
+(declaim (sb-ext:muffle-conditions style-warning))
+
+;; Test the statistical significance of the cumulative number of goals achived during the training
+;; between different reward shaping heuristics.
+
+(defpackage :ros.script.cumulative-goals-test.3827961929
+  (:use :cl :eazy-gnuplot :trivia :iterate))
+(in-package :ros.script.cumulative-goals-test.3827961929)
+
+(defun load-file (csv)
+  (numcl:asarray
+   (mapcar
+    (lambda (row)
+      (ematch row
+        ((list (@@ 3 _)
+               (read domain)
+               heur
+               (@@ 3 _)
+               (read goals))
+         (list domain
+               (read-from-string
+                (subseq heur 0 (- (length heur) 5)))
+               goals))))
+    (cdr
+     (fare-csv:with-rfc4180-csv-syntax ()
+       (let ((fare-csv:*separator* #\Space))
+         (fare-csv:read-csv-file csv)))))))
+
+(defparameter *table* (load-file "cumulative-goals.csv"))
+
+(defparameter *domains* (sort (remove-duplicates (numcl:aref *table* t 0)) #'string<=))
+(defparameter *heuristics* (sort (remove-duplicates (numcl:aref *table* t 1)) #'string<=))
+
+(defun S (x y)
+  (cond
+    ((< x y) 1)
+    ((= x y) 1/2)
+    ((> x y) 0)))
+
+(defun U (xs ys)
+  (iter outer
+        (for x in xs)
+        (iter (for y in ys)
+              (in outer
+                  (summing (S x y))))))
+
+(defun select (domain heur)
+  (iter (for i below (numcl:length *table*))
+        (for elem = (numcl:aref *table* i))
+        (match elem
+          ((array :dimensions 1 :contents ((eq domain) (eq heur) goal))
+           (collecting goal)))))
+
+;; with large samples, U statistics approximately follows gaussian distribution.
+
+(defun wilcoxon-rank-sum-test (group1 group2)
+  ;; ignoring for now
+  ;; (assert (null (intersection group1 group2)))
+  (alexandria:when-let ((ties (intersection group1 group2)))
+    (format *error-output* "~&There are ~a ties; possible inaccuracy.~%" (length ties)))
+  (let* ((U1 (U group1 group2))
+         (U2 (U group2 group1))
+         (n1 (length group1))
+         (n2 (length group2))
+         (mean (* n1 n2 1/2))
+         (sigma (sqrt (* n1 n2 (+ n1 n2 1) 1/12))))
+    (values u1 u2 mean sigma
+            (cl-mathstats:gaussian-cdf (min U1 U2) mean sigma))))
+
+(defun main (&rest argv)
+  (declare (ignorable argv))
+  (format t "domain group1 group2 U1 U2 mean_U sigma_U Pr(U<min(U1,U2))")
+  (iter (for domain in-vector *domains*)
+        (iter (for i below (length *heuristics*))
+              (for h2 = (aref *heuristics* i))
+              (iter (for j below (length *heuristics*))
+                    (when (= i j)
+                      (next-iteration))
+                    (for h1 = (aref *heuristics* j))
+                    (format t "~&~A ~A ~A ~{~f~^ ~}~%"
+                            domain h1 h2
+                            (multiple-value-list
+                             (wilcoxon-rank-sum-test
+                              (select domain h1)
+                              (select domain h2))))))))
+;;; vim: set ft=lisp lisp:

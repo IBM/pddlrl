@@ -1,0 +1,107 @@
+
+This repository reproduces the experiments in https://arxiv.org/abs/2109.14830 accepted in [[http://icaps22.icaps-conference.org/][ICAPS-22]].
+Citation:
+
+#+begin_src bibtex
+@inproceedings{gehring2022pddlrl,
+  title={{Reinforcement Learning for Classical Planning: Viewing Heuristics as Dense Reward Generators}},
+  author={Gehring, Clement and Asai, Masataro and Chitnis, Rohan and Silver, Tom and Kaelbling, Leslie Pack and Sohrabi, Shirin and Katz, Michael},
+  booktitle={International Conference on Automated Planning and Scheduling},
+  year={2022}
+}
+#+end_src
+
+* Setup
+
+PDDLRL requires anaconda / miniconda, available from [[https://docs.conda.io/en/latest/miniconda.html][here]].
+
+#+begin_src
+git clone https://github.com/guicho271828/pddlrl.git
+cd pddlrl
+source install.sh
+#+end_src
+
+=./install.sh= or =(ba)sh ./install.sh= does not work; =source install.sh= is necessary.
+The script downloads dependencies outside pip and conda too (e.g., PDDL source files, validators).
+
+=install.sh= assumes cuda 11.2 or higher.
+For older CUDA versions,
+replace =environment-cuda112.yml= in the script to =environment-cudaXXX.yml=
+where XXX should be replaced with 100, 101, 110 for CUDA 10.0, 10.1, 11.0, respectively.
+
+* Usage
+
+=pddlrl/experiments/main.py= is the main program.
+
+#+BEGIN_EXAMPLE
+usage: main.py [-h] [--runid RUNID] [--ginfile GINFILE] [--train-root-dir TRAIN_ROOT_DIR] [--domain DOMAIN] [--hyper HYPER]
+               [--hyperfile HYPERFILE] [--evaluator {gbfs,hc,train}]
+               [--evaluation-weight-snapshot-iteration EVALUATION_WEIGHT_SNAPSHOT_ITERATION] [--problem PROBLEM]
+               [--time-limit TIME_LIMIT] [--evaluation-limit EVALUATION_LIMIT] [--expansion-limit EXPANSION_LIMIT] [-f]
+               [--eval-dir EVAL_DIR] [-j PROCESSES]
+               {train-RL,evaluate-RL,evaluate-nonRL}
+
+positional arguments:
+  {train-RL,evaluate-RL,evaluate-nonRL}
+                        Evaluation mode.
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --runid RUNID         An ID string for identifying a run. To evaluate a training result, the same ID must be provided.
+  --ginfile GINFILE     List of paths to the config files. This option can be specified multiple times.
+  --train-root-dir TRAIN_ROOT_DIR
+                        Directory used to store the trained weights. Weights are located in <train-dir>/<hash>/<snapshot-iteration>.
+                        This argument is required in training (when hash value is not available yet) and when only runid is known
+                        (same; hash value is not available). This argument is ignored when --hyperfile is specified.
+  --domain DOMAIN       Pathname to a directory that contains a domain file and a train/ directory containing training problems. The
+                        value is mandatory in all modes.
+  --hyper HYPER         A string representation of a python list that specifies a tunable hyperparameter. Its first value must be a
+                        string, a name of a settable place in gin. The rest is a list of values to be searched from. For example,
+                        --hyper '["BATCH_SIZE", 10, 20, 50]' specifies the batch size. This option can be specified multiple times to
+                        add more hyperparameters. See each gin file under pddlrl/experiments/ to see what parameter can be
+                        configured.
+  --hyperfile HYPERFILE
+                        Pathname to the hyperparameter file (hyper.json). --hyperfile and --train-root-dir/--runid are mutually
+                        exclusive. When --hyperfile is specified, --train-root-dir is deduced from the value of --hyperfile. When
+                        --hyperfile is not specified, it requires both --train-root-dir and --runid, which are then used to deduce
+                        the location of hyperfile.
+  --evaluator {gbfs,hc,train}
+                        The name of the evaluator, which could be "train" in the training mode.
+  --evaluation-weight-snapshot-iteration EVALUATION_WEIGHT_SNAPSHOT_ITERATION
+                        Specify the iteration in which the snapshot of the weights were taken. Meaningful only in evaluate-RL mode.
+  --problem PROBLEM     Pathname to the problem file. Meaningful only in evaluate-RL/-nonRL. When it is a directory, all files with
+                        the extension .pddl will be iterated over.
+  --time-limit TIME_LIMIT
+                        Runtime limit for evaluation. Meaningful only in evaluate-RL/-nonRL.
+  --evaluation-limit EVALUATION_LIMIT
+                        Evaluation limit for evaluation. Meaningful only in evaluate-RL/-nonRL.
+  --expansion-limit EXPANSION_LIMIT
+                        Expansion limit for evaluation. Meaningful only in evaluate-RL/-nonRL.
+  -f, --force           Force re-running experiments even if the log file already exist.
+  --eval-dir EVAL_DIR   Supersedes the evaluation directory where the output is written. By default, its value is deduced from the
+                        value of train_root_dir: The default location is <train_root_dir>-<evaluator>/<hash>/.
+  -j PROCESSES, --processes PROCESSES
+                        Enable parallel processing (evaluation of non-RL only), and specify the number of CPU cores.
+#+END_EXAMPLE
+
+
+* Reproducing the results
+
+See experiments/README.
+
+* Configuring pddlrl
+
+pddlrl makes heavy use of [[https://github.com/google/gin-config][gin]] to configure most aspects
+of the code. To properly understand gin's syntax, it is recommend to read through gin's relatively
+short documentation, we'll highlight some of the core behavior that might surprise users unfamiliar
+with gin.
+
+- Gin supports generating the "operative" config. This is a gin config file with all the configured
+  values used up until that point in the execution. This includes any default arguments that were
+  never explicitly set. This makes it easy to reconfigure things exactly, even when some hidden default
+  value was changed somewhere in the code. The gridsearch implementation will export the operative
+  config for each run.
+- Gin has a macro syntax which allow for some config value to be reused. It is recommended to use all
+  caps to highlight macros. We use macros to simplify setting config value programmatically, such as
+  when doing a grid search, even if the macro is only ever used once.
+

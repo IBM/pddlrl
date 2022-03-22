@@ -1,0 +1,130 @@
+#!/bin/sh
+#|-*- mode:lisp -*-|#
+#| <Put a one-line description here>
+exec ros -Q -- $0 "$@"
+|#
+
+;; This file is a part of PDDLRL project.
+;; Copyright (c) 2020 Clement Gehring (clement@gehring.io)
+;; Copyright (c) 2021 Masataro Asai (guicho2.71828@gmail.com, masataro.asai@ibm.com), IBM Corporation
+
+(progn ;;init forms
+  (ros:ensure-asdf)
+  #+quicklisp (ql:quickload '(:eazy-gnuplot :yason :trivia :cl-ppcre :trivia.ppcre :iterate :cl-colors2 :function-cache) :silent t)
+  )
+
+(declaim (sb-ext:muffle-conditions style-warning))
+
+;; This plot compares the number of node evaluations between
+;; a baseline heuristic function and the learned heuristic function.
+
+(defpackage :ros.script.plot-init
+  (:use :cl :eazy-gnuplot :alexandria :trivia :ppcre :trivia.ppcre :iterate :function-cache)
+  (:import-from :cl-colors2 :rgb :rgb-red :rgb-blue :rgb-green))
+(in-package :ros.script.plot-init)
+
+(defcached parse-json (filename)
+  ;; (format t "; loading ~a ~%" (enough-namestring filename))
+  (with-open-file (f filename)
+    (yason:parse f)))
+
+
+(setf yason:*parse-object-as* :hash-table)
+(setf yason:*parse-json-booleans-as-symbols* nil)
+(setf yason:*parse-object-key-fn* #'read-from-string)
+
+(defun objects (log)
+  (parse-integer (subseq (gethash 'problem log) 1 4)))
+
+(defvar *plot-stream*)
+
+(defun solved-p (log)
+  (eq t (gethash 'solved log)))
+
+(defvar *evaluation-threshold* 100000)
+
+(defun evaluations (log)
+  (min *evaluation-threshold*
+       (gethash 'evaluated_states log)))
+
+(defun load-all-logs (train-dir)
+  (iter (with table = (make-hash-table :test 'equal))
+        (for logfile in (directory (format nil "~a/*/*.json" train-dir)))
+        (for problem = (pathname-name logfile))
+        ;; (for hash = (lastcar (pathname-directory logfile)))
+        (for log = (parse-json logfile))
+        (for eval = (if (solved-p log)
+                        (evaluations log)
+                        *evaluation-threshold*))
+        (push eval (gethash problem table))
+        (finally (return table))))
+
+(defun produce-points (train-dir-RL)
+  (ematch (pathname train-dir-RL)
+    ((pathname :directory (list* :relative dir rest))
+     (let ((train-dir-nonRL
+            (make-pathname :defaults train-dir-RL
+                           :directory (list* :relative (format nil "~a-nonRL" dir) rest))))
+       (iter (with logs-nonRL = (load-all-logs train-dir-nonRL))
+             (for (problem RL-evals) in-hashtable (load-all-logs train-dir-RL))
+             (for nonRL-eval = (first (gethash problem logs-nonRL)))
+             (iter (for RL-eval in RL-evals)
+                   (format *plot-stream* "~&~a ~a" nonRL-eval RL-eval)))))))
+
+(defun produce-points-min-only (train-dir-RL)
+  (ematch (pathname train-dir-RL)
+    ((pathname :directory (list* :relative dir rest))
+     (let* ((train-dir-nonRL
+             (make-pathname :defaults train-dir-RL
+                            :directory (list* :relative (format nil "~a-nonRL" dir) rest)))
+            (RL-sum-evals (apply #'mapcar #'+
+                                 (iter (for (problem RL-evals) in-hashtable (load-all-logs train-dir-RL))
+                                       (collecting RL-evals))))
+            (best-seed-index
+             (iter (for RL-sum-eval in RL-sum-evals)
+                   (for i from 0)
+                   (finding i minimizing RL-sum-eval))))
+
+       (iter (with logs-nonRL = (load-all-logs train-dir-nonRL))
+             (for (problem RL-evals) in-hashtable (load-all-logs train-dir-RL))
+             (for min-eval = (elt RL-evals best-seed-index))
+             (for nonRL-eval = (first (gethash problem logs-nonRL)))
+             (collecting (cons nonRL-eval min-eval) into results)
+             (finally
+              (let ((results (sort results (lambda-match* (((cons x1 _) (cons (> x1) _)) t)))))
+                (iter (for (nonRL-eval . RL-eval) in results)
+                      (format *plot-stream* "~&~a ~a" nonRL-eval RL-eval)))))))))
+
+;; (progn
+(defun main (&optional (search "*") (heur "*") (domain "*") (dir "apr15") (track "*") &rest argv)
+  (declare (ignorable argv))
+  (with-plots (*plot-stream*)
+    (gp-setup :output (substitute #\_ #\* (format nil "eval-~a-~a-~a-~a.tex" dir domain heur search))
+              :terminal `(:epslatex :size (|2in| |2in|) :fontscale 0.6)
+              :size :square
+              :xrange `(50 ,*evaluation-threshold*)
+              :yrange `(50 ,*evaluation-threshold*)
+              :pointsize 0.3
+              :logscale :xy
+              :format '(xy "\\\\small$10^%T$")
+              :mxtics :default
+              :mytics :default
+              :title domain
+              :xlabel "$h^{add}$, evaluated states"
+              :ylabel "$\\\\hat{V}_{\\\\gamma}^*$, evaluated states"
+              )
+    ;; (gp :show :colornames)
+    ;; (gp :show :style :line)
+
+    (iter (for eval-root-dir in (directory (format nil "~a/~a/~a/~a-True-~a/" dir track domain heur search)))
+          (for dirname = (enough-namestring eval-root-dir))
+          (for id from 0)
+          (plot (curry #'produce-points dirname)
+                :notitle nil
+                :pointsize 0.7
+                :lc '(:rgb "#b80006000")
+                :pt 1
+                :with :points))
+    (plot "x" :notitle nil :lc '(:rgb "gray"))))
+;; (main "gbfs" "*" "blocks")
+;; (main "gbfs" "*" "ferry"))
