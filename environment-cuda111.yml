@@ -4,7 +4,6 @@
 
 # note: untested.
 
-name: pddlrl
 dependencies:
   - python=3.8
   - parallel

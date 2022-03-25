@@ -3,7 +3,6 @@
 # Copyright (c) 2021 Masataro Asai (guicho2.71828@gmail.com, masataro.asai@ibm.com), IBM Corporation
 
 
-name: pddlrl
 dependencies:
   - python=3.8
   - parallel

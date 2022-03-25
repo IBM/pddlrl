@@ -15,7 +15,7 @@ env=pddlrl
         exit 1
     }
 
-    conda env create -f environment-cuda112.yml || {
+    conda env create -n $env -f environment-cuda112.yml || {
         echo "installation failed; cleaning up"
         conda env remove -n $env
         exit 1
