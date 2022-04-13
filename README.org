@@ -16,7 +16,7 @@ Citation:
 PDDLRL requires anaconda / miniconda, available from [[https://docs.conda.io/en/latest/miniconda.html][here]].
 
 #+begin_src
-git clone https://github.com/guicho271828/pddlrl.git
+git clone https://github.com/IBM/pddlrl.git
 cd pddlrl
 source install.sh
 #+end_src
